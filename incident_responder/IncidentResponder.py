@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-
+import logging
 
 class IncidentResponder(ABC):
     """Abstract base class for incident responders."""
