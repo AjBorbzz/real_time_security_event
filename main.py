@@ -8,46 +8,17 @@ import json
 from email.mime.text import MIMEText
 from botocore.exceptions import ClientError
 from abc import ABC, abstractmethod
-
-# --- Configuration (Environment Variables) ---
-# Use a consistent prefix (e.g., IR_) for all related environment variables
-AWS_ACCESS_KEY = os.environ.get('AWS_ACCESS_KEY_ID')
-AWS_SECRET_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
-AWS_REGION = os.environ.get('AWS_REGION', 'us-west-1')
-ISOLATION_SECURITY_GROUP_ID = os.environ.get('ISOLATION_SECURITY_GROUP_ID')
-EMAIL_FROM = os.environ.get('EMAIL_FROM', "alerts@yourcompany.com")
-EMAIL_TO = os.environ.get('EMAIL_TO', "ciso@yourcompany.com")
-SMTP_SERVER = os.environ.get('SMTP_SERVER', "smtp.yourcompany.com")
-SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
-SMTP_USER = os.environ.get('SMTP_USER')
-SMTP_PASS = os.environ.get('SMTP_PASS')
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
-logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# --- Abstract Base Class for Responders ---
-
-class IncidentResponder(ABC):
-    """Abstract base class for incident responders."""
-
-    def __init__(self, instance_id):
-        self.instance_id = instance_id
-        self.logger = logging.getLogger(self.__class__.__name__)  # Logger per class
-
-    @abstractmethod
-    def respond(self):
-        """Responds to an incident.  Must be implemented by subclasses."""
-        pass
-
-# --- Concrete Responder Classes ---
+from incident_responder.IncidentResponder import IncidentResponder
+from config.config import Config
 
 class InstanceIsolator(IncidentResponder):
     """Isolates an EC2 instance."""
 
-    def __init__(self, instance_id, security_group_id=ISOLATION_SECURITY_GROUP_ID):
+    def __init__(self, instance_id, security_group_id=Config.get('ISOLATION_SECURITY_GROUP_ID')):
         super().__init__(instance_id)
         self.security_group_id = security_group_id
-        self.ec2_client = boto3.client('ec2', aws_access_key_id=AWS_ACCESS_KEY,
-                                       aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
+        self.ec2_client = boto3.client('ec2', aws_access_key_id=Config.aws_access_key(),
+                                       aws_secret_access_key=Config.aws_secret_key(), region_name=Config.aws_region())
 
     def respond(self):
         """Isolates the instance by changing its security group."""
@@ -69,13 +40,15 @@ class InstanceIsolator(IncidentResponder):
             self.logger.error(f"Unexpected error during isolation: {e}", exc_info=True)
             return False
 
+
+
 class ForensicDataCollector(IncidentResponder):
     """Collects forensic data from an EC2 instance."""
 
     def __init__(self, instance_id):
         super().__init__(instance_id)
-        self.ec2_client = boto3.client('ec2', aws_access_key_id=AWS_ACCESS_KEY,
-                                      aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
+        self.ec2_client = boto3.client('ec2', aws_access_key_id=Config.aws_access_key(),
+                                       aws_secret_access_key=Config.aws_secret_key(), region_name=Config.aws_region())
 
     def respond(self):
         """Collects logs and memory dump (using LiME)."""
@@ -147,20 +120,19 @@ class EmailNotifier(IncidentResponder):
         full_subject = f"{self.subject_prefix}: {subject}"
         msg = MIMEText(body)
         msg['Subject'] = full_subject
-        msg['From'] = EMAIL_FROM
-        msg['To'] = EMAIL_TO
+        msg['From'] = Config.email_from()
+        msg['To'] = Config.email_to()
 
         try:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            with smtplib.SMTP(Config.smtp_server(), Config.smtp_port()) as server:
                 server.starttls()
-                if SMTP_USER and SMTP_PASS:
-                    server.login(SMTP_USER, SMTP_PASS)
-                server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-            self.logger.info(f"Alert email sent to {EMAIL_TO}")
+                if Config.smtp_user() and Config.smtp_pass():
+                    server.login(Config.smtp_user(), Config.smtp_pass())
+                server.sendmail(Config.email_from(), [Config.email_to()], msg.as_string())
+            self.logger.info(f"Alert email sent to {Config.email_to()}")
         except Exception as e:
             self.logger.error(f"Failed to send email: {e}", exc_info=True)
 
-# --- Microservice-like Structure (using classes) ---
 
 class IncidentDetectionService:
     """Detects incidents (simulated in this example)."""
@@ -202,7 +174,6 @@ class IncidentResponseService:
                 body=f"Attempt to isolate instance {instance_id} FAILED.  Manual intervention required."
             )
 
-# --- Factory for Responders (Optional) ---
 
 class ResponderFactory:
     """Creates instances of responder classes."""
@@ -217,25 +188,20 @@ class ResponderFactory:
     def create_notifier(instance_id):
       return EmailNotifier(instance_id)
 
-# --- Main Execution ---
 
 if __name__ == "__main__":
-    # --- Decoupled services ---
-    # Using the factory to create responders.  Easier to manage dependencies.
     factory = ResponderFactory()
     isolator = factory.create_isolator("dummy_instance_id") # Pass a dummy ID initially
     data_collector = factory.create_data_collector("dummy_instance_id")
     notifier = factory.create_notifier("dummy_instance_id")
-    # The services don't directly depend on each other.
+    
     detection_service = IncidentDetectionService(factory)
 
     response_service = IncidentResponseService(isolator, data_collector, notifier)
 
-    # --- Simulate the incident detection and response ---
     compromised_instance = detection_service.detect_incident()
 
-    # Now, we create *new* responders with the correct instance ID.
-    if compromised_instance: # Check if detection was successful
+    if compromised_instance:
       isolator = factory.create_isolator(compromised_instance)
       data_collector = factory.create_data_collector(compromised_instance)
       notifier = factory.create_notifier(compromised_instance)
